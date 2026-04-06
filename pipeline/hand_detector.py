@@ -24,10 +24,20 @@ class HandDetectionResult:
     wrist_pos: Optional[Tuple[float, float]] = None
     index_tip: Optional[Tuple[float, float]] = None
     thumb_tip: Optional[Tuple[float, float]] = None
+    # --- New grasp-awareness features ---
+    grasp_openness: float = 1.0          # 0.0 = closed fist, 1.0 = fully open hand
+    pinch_distance: float = 999.0        # thumb tip to index tip in pixels
+    fingertip_center: Optional[Tuple[float, float]] = None  # avg of 5 fingertip positions
+    grip_bbox: Optional[List[float]] = None   # tight bbox around thumb+index+middle tips
+
+
+# MediaPipe landmark indices for fingertips
+_FINGERTIP_IDS = [4, 8, 12, 16, 20]   # thumb, index, middle, ring, pinky
+_FINGER_MCP_IDS = [2, 5, 9, 13, 17]   # MCP joints (base of each finger)
 
 
 class HandDetector:
-    """Real-time hand detector with 21 keypoints and wrist/index/thumb helpers."""
+    """Real-time hand detector with 21 keypoints, grasp-state estimation, and contact helpers."""
 
     def __init__(
         self,
@@ -49,6 +59,61 @@ class HandDetector:
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
         )
+
+    def _compute_grasp_features(
+        self, landmarks: List[List[float]], frame_w: int, frame_h: int,
+    ) -> Tuple[float, float, Optional[Tuple[float, float]], Optional[List[float]]]:
+        """
+        Compute grasp-awareness features from 21 hand landmarks.
+
+        Returns:
+            grasp_openness:   0.0 (closed fist) to 1.0 (open hand)
+            pinch_distance:   pixel distance between thumb tip and index tip
+            fingertip_center: average (x, y) of all 5 fingertip positions
+            grip_bbox:        [x1, y1, x2, y2] tight box around thumb+index+middle tips
+        """
+        # --- Pinch distance (thumb tip ↔ index tip) ---
+        thumb = np.array(landmarks[4][:2], dtype=float)
+        index = np.array(landmarks[8][:2], dtype=float)
+        pinch_dist = float(np.linalg.norm(thumb - index))
+
+        # --- Fingertip center ---
+        tips = [np.array(landmarks[tid][:2], dtype=float) for tid in _FINGERTIP_IDS]
+        fingertip_center = tuple(np.mean(tips, axis=0).tolist())
+
+        # --- Grip bbox (thumb + index + middle tips) ---
+        grip_pts = [landmarks[4][:2], landmarks[8][:2], landmarks[12][:2]]
+        gx = [p[0] for p in grip_pts]
+        gy = [p[1] for p in grip_pts]
+        pad = 15
+        grip_bbox = [
+            max(0, min(gx) - pad),
+            max(0, min(gy) - pad),
+            min(frame_w - 1, max(gx) + pad),
+            min(frame_h - 1, max(gy) + pad),
+        ]
+
+        # --- Grasp openness ---
+        # Measure how far each fingertip is from its MCP joint, normalised by
+        # palm size (wrist-to-middle-MCP distance as reference).
+        wrist = np.array(landmarks[0][:2], dtype=float)
+        mid_mcp = np.array(landmarks[9][:2], dtype=float)
+        palm_size = float(np.linalg.norm(mid_mcp - wrist))
+        if palm_size < 1.0:
+            palm_size = 1.0
+
+        extensions = []
+        for tip_id, mcp_id in zip(_FINGERTIP_IDS, _FINGER_MCP_IDS):
+            tip = np.array(landmarks[tip_id][:2], dtype=float)
+            mcp = np.array(landmarks[mcp_id][:2], dtype=float)
+            ext = float(np.linalg.norm(tip - mcp)) / palm_size
+            extensions.append(ext)
+
+        # Average extension: ~0.3 = fist, ~1.0+ = open hand → normalise to [0, 1]
+        avg_ext = float(np.mean(extensions))
+        grasp_openness = float(np.clip((avg_ext - 0.25) / 0.75, 0.0, 1.0))
+
+        return grasp_openness, pinch_dist, fingertip_center, grip_bbox
 
     def detect(self, frame: np.ndarray) -> HandDetectionResult:
         """Detect the strongest hand in a BGR frame."""
@@ -97,6 +162,10 @@ class HandDetector:
         index_tip = (landmarks[8][0], landmarks[8][1])
         thumb_tip = (landmarks[4][0], landmarks[4][1])
 
+        # --- Compute grasp features ---
+        grasp_openness, pinch_dist, ftip_center, grip_bbox = \
+            self._compute_grasp_features(landmarks, frame_w, frame_h)
+
         return HandDetectionResult(
             detected=True,
             hand_bbox=[x1, y1, x2, y2],
@@ -106,6 +175,10 @@ class HandDetector:
             wrist_pos=wrist,
             index_tip=index_tip,
             thumb_tip=thumb_tip,
+            grasp_openness=grasp_openness,
+            pinch_distance=pinch_dist,
+            fingertip_center=ftip_center,
+            grip_bbox=grip_bbox,
         )
 
     def draw(self, frame: np.ndarray, result: HandDetectionResult) -> np.ndarray:
@@ -133,6 +206,16 @@ class HandDetector:
         if result.thumb_tip is not None:
             cv2.circle(out, (int(result.thumb_tip[0]), int(result.thumb_tip[1])), 4, (0, 128, 255), -1)
 
+        # Draw grasp state
+        grasp_label = f"Grasp: {result.grasp_openness:.2f}"
+        cv2.putText(out, grasp_label, (x1, y2 + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 0), 1)
+
+        # Draw grip bbox if available
+        if result.grip_bbox is not None:
+            gx1, gy1, gx2, gy2 = [int(v) for v in result.grip_bbox]
+            cv2.rectangle(out, (gx1, gy1), (gx2, gy2), (0, 200, 200), 1)
+
         return out
 
     def release(self) -> None:
@@ -150,6 +233,9 @@ if __name__ == "__main__":
             break
 
         hand = detector.detect(frame)
+        if hand.detected:
+            print(f"grasp={hand.grasp_openness:.2f}  pinch={hand.pinch_distance:.0f}px  "
+                  f"ftip_center={hand.fingertip_center}")
         vis = detector.draw(frame, hand)
         cv2.imshow("FIBA AI - Hand Detector", vis)
 

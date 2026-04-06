@@ -9,8 +9,6 @@ Find-it-by-Action (FIBA AI) is a zero-shot, edge-friendly system that retrieves 
 
 ## Key docs
 - `project.md`: complete high-depth technical project document
-- `architecture_atul.md`, `architecture_tanishk.md`, `architecture_yash.md`: module architecture
-- `design_atul.md`, `design_tanishk.md`, `design_yash.md`: implementation specs
 - `common_integration.md`: interface contracts and integration playbook
 - `CONTRIBUTING.md`: collaboration and PR workflow
 

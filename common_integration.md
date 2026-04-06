@@ -206,22 +206,13 @@ python app.py
 
 ---
 
-## Claude Opus Integration Instructions
-When you feed each file to Claude Opus in the IDE:
+## Implementation Source of Truth
+Use these files as the canonical implementation references:
 
-1. Feed `design_atul.md` → Claude Opus generates `query_parser.py`, `hand_detector.py`, `object_detector.py`
-2. Feed `design_tanishk.md` → Claude Opus generates `tracker.py`, `motion_engine.py`, `action_inferencer.py`, `segmentor.py`
-3. Feed `design_yash.md` → Claude Opus generates `integrator.py`, `app.py`
-4. Feed `common_integration.md` → Claude Opus verifies interfaces match and resolves any conflicts
-5. Feed all 4 files → Claude Opus writes unit tests for each module
-
-**Prompt template for Claude Opus:**
-```
-Here is the design spec for [Atul/Tanishk/Yash]'s module in the FIBA AI system.
-The interface contracts are defined in common_integration.md.
-Please implement all the code exactly as specced, following the interface contracts.
-Ensure all imports are correct and the code is production-ready.
-```
+1. `project.md` for full architecture, objective alignment, and evaluation plan.
+2. `common_integration.md` for strict interface contracts between modules.
+3. `pipeline/*.py` for the actual executable implementation.
+4. `tests/` for validation and regression checks.
 
 ---
 

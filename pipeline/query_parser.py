@@ -1,4 +1,10 @@
-"""Query parser for FIBA AI action retrieval."""
+"""Query parser for FIBA AI action retrieval.
+
+Improvements:
+  - Spacy path now uses _resolve_object_noun() for compound noun detection
+  - More compound nouns for common demo objects
+  - Better handling of multi-word queries and phrasal verbs
+"""
 
 from __future__ import annotations
 
@@ -31,6 +37,8 @@ VERB_CATEGORY_MAP = {
     "slicing": "CUT",
     "dice": "CUT",
     "dicing": "CUT",
+    "mince": "CUT",
+    "mincing": "CUT",
     # OPEN family
     "open": "OPEN",
     "opening": "OPEN",
@@ -41,13 +49,22 @@ VERB_CATEGORY_MAP = {
     "peeling": "OPEN",
     "unwrap": "OPEN",
     "unwrapping": "OPEN",
-    # POUR family (includes dip, insert, submerge — liquid/container interactions)
+    "unbox": "OPEN",
+    "unboxing": "OPEN",
+    # POUR family
     "pour": "POUR",
     "pouring": "POUR",
     "fill": "POUR",
     "filling": "POUR",
     "drain": "POUR",
     "draining": "POUR",
+    "drizzle": "POUR",
+    "drizzling": "POUR",
+    "squirt": "POUR",
+    "squirting": "POUR",
+    "add": "POUR",
+    "adding": "POUR",
+    # DIP family
     "dip": "DIP",
     "dipping": "DIP",
     "dunk": "DIP",
@@ -71,6 +88,12 @@ VERB_CATEGORY_MAP = {
     "lifting": "PICK",
     "hold": "PICK",
     "holding": "PICK",
+    "get": "PICK",
+    "getting": "PICK",
+    "fetch": "PICK",
+    "fetching": "PICK",
+    "remove": "PICK",
+    "removing": "PICK",
     # PLACE family
     "place": "PLACE",
     "placing": "PLACE",
@@ -79,6 +102,10 @@ VERB_CATEGORY_MAP = {
     "set": "PLACE",
     "drop": "PLACE",
     "dropping": "PLACE",
+    "lay": "PLACE",
+    "laying": "PLACE",
+    "keep": "PLACE",
+    "keeping": "PLACE",
     # MIX family
     "mix": "MIX",
     "mixing": "MIX",
@@ -89,6 +116,8 @@ VERB_CATEGORY_MAP = {
     "blend": "MIX",
     "whisk": "MIX",
     "whisking": "MIX",
+    "toss": "MIX",
+    "tossing": "MIX",
     # CLOSE family
     "close": "CLOSE",
     "closing": "CLOSE",
@@ -97,6 +126,8 @@ VERB_CATEGORY_MAP = {
     "cover": "CLOSE",
     "covering": "CLOSE",
     "seal": "CLOSE",
+    "wrap": "CLOSE",
+    "wrapping": "CLOSE",
     # PUSH / PULL
     "push": "PUSH",
     "pushing": "PUSH",
@@ -112,6 +143,8 @@ VERB_CATEGORY_MAP = {
     "spread": "SPREAD",
     "spreading": "SPREAD",
     "smear": "SPREAD",
+    "apply": "SPREAD",
+    "applying": "SPREAD",
     # SCOOP
     "scoop": "SCOOP",
     "scooping": "SCOOP",
@@ -131,6 +164,20 @@ VERB_CATEGORY_MAP = {
     "tear": "TEAR",
     "tearing": "TEAR",
     "rip": "TEAR",
+    # EAT / DRINK
+    "eat": "PICK",
+    "eating": "PICK",
+    "drink": "PICK",
+    "drinking": "PICK",
+    "bite": "PICK",
+    "biting": "PICK",
+    # FLIP / TURN
+    "flip": "OPEN",
+    "flipping": "OPEN",
+    "turn": "OPEN",
+    "turning": "OPEN",
+    "rotate": "OPEN",
+    "rotating": "OPEN",
 }
 
 CATEGORY_TOOL_MAP = {
@@ -152,7 +199,7 @@ CATEGORY_TOOL_MAP = {
     "TEAR": None,
 }
 
-TOOL_WORDS = {"knife", "spoon", "fork", "scissors", "hand", "finger"}
+TOOL_WORDS = {"knife", "spoon", "fork", "scissors", "hand", "finger", "spatula", "tongs"}
 STOP_WORDS = {
     "a",
     "an",
@@ -250,6 +297,104 @@ def _load_spacy_model():
     return _NLP
 
 
+# ── Compound noun map — maps multi-word objects to YOLO-friendly labels ───────
+COMPOUND_NOUNS = {
+    "tea bag": "cup",
+    "teabag": "cup",
+    "tea cup": "cup",
+    "water bottle": "bottle",
+    "wine glass": "cup",
+    "coffee cup": "cup",
+    "frying pan": "bowl",
+    "cutting board": "knife",
+    "paper towel": "book",
+    "hot dog": "hot dog",
+    "hotdog": "hot dog",
+    "cell phone": "cell phone",
+    "mobile phone": "cell phone",
+    "remote control": "remote",
+    "plastic wrap": "book",
+    "plastic wrapper": "book",
+    "aluminium foil": "book",
+    "aluminum foil": "book",
+    "tomato ketchup": "bottle",
+    "tomato sauce": "bottle",
+    "soy sauce": "bottle",
+    "hot sauce": "bottle",
+    "salad dressing": "bottle",
+    "peanut butter": "bowl",
+    "ice cream": "bowl",
+    "whipped cream": "bottle",
+    "olive oil": "bottle",
+    "cooking oil": "bottle",
+    "bread slice": "sandwich",
+    "bread roll": "sandwich",
+    "hamburger bun": "sandwich",
+    "hot dog bun": "hot dog",
+}
+
+OBJECT_ALIASES = {
+    "hotdog": "hot dog",
+    "hotdogs": "hot dog",
+    "frankfurter": "hot dog",
+    "frank": "hot dog",
+    "sausage": "hot dog",
+    "burger": "sandwich",
+    "hamburger": "sandwich",
+    "ketchup": "bottle",
+    "mustard": "bottle",
+    "sauce": "bottle",
+    "condiment": "bottle",
+    "wrapper": "book",
+    "packet": "book",
+    "sachet": "book",
+    "napkin": "book",
+    "tissue": "book",
+    "mug": "cup",
+    "glass": "cup",
+    "pan": "bowl",
+    "pot": "bowl",
+    "skillet": "bowl",
+    "plate": "bowl",
+    "dish": "bowl",
+    "tray": "bowl",
+    "container": "bowl",
+    "lid": "frisbee",
+    "cap": "bottle",
+    "jar": "bottle",
+    "can": "bottle",
+    "carton": "bottle",
+    "box": "suitcase",
+    "package": "suitcase",
+    "parcel": "suitcase",
+}
+
+
+def _canonicalize_object_noun(noun: str) -> str:
+    """Map common user terms to detector-friendly canonical nouns."""
+    if not noun:
+        return "object"
+    lowered = noun.lower().strip()
+    return OBJECT_ALIASES.get(lowered, lowered)
+
+
+def _resolve_object_noun(remaining_tokens: list[str], raw_query: str) -> str:
+    """Resolve object noun, handling compound nouns and YOLO-friendly mapping."""
+    # First check for compound nouns in the raw query
+    raw_lower = raw_query.lower()
+    for compound, coco_label in COMPOUND_NOUNS.items():
+        if compound in raw_lower:
+            return coco_label
+
+    # Join remaining to check for two-word compounds
+    if len(remaining_tokens) >= 2:
+        pair = f"{remaining_tokens[0]} {remaining_tokens[1]}"
+        if pair in COMPOUND_NOUNS:
+            return COMPOUND_NOUNS[pair]
+
+    return remaining_tokens[0] if remaining_tokens else "object"
+
+
 def _parse_with_spacy(raw_query: str, tokens: list[str]) -> Optional[QueryResult]:
     nlp = _load_spacy_model()
     if nlp is None:
@@ -282,20 +427,43 @@ def _parse_with_spacy(raw_query: str, tokens: list[str]) -> Optional[QueryResult
             action_verb = "unknown"
             action_category = "UNKNOWN"
 
-    object_noun = None
-    if verb_index is not None:
-        for token in doc:
-            if token.i <= verb_index:
-                continue
-            if token.pos_ in {"NOUN", "PROPN"}:
-                candidate = token.lemma_.lower() if token.lemma_ else token.text.lower()
-                if candidate and candidate not in STOP_WORDS:
-                    object_noun = candidate
-                    break
+    # --- FIXED: Use _resolve_object_noun for compound noun support in spacy path ---
+    # First try compound noun resolution from raw query
+    raw_lower = raw_query.lower()
+    compound_found = None
+    for compound, coco_label in COMPOUND_NOUNS.items():
+        if compound in raw_lower:
+            compound_found = coco_label
+            break
 
-    if object_noun is None:
-        fallback_tokens = tokens[1:] if tokens else []
-        object_noun = fallback_tokens[0] if fallback_tokens else "object"
+    if compound_found:
+        object_noun = compound_found
+    else:
+        # Fall back to spacy noun extraction
+        object_noun = None
+        if verb_index is not None:
+            for token in doc:
+                if token.i <= verb_index:
+                    continue
+                if token.pos_ in {"NOUN", "PROPN"}:
+                    candidate = token.lemma_.lower() if token.lemma_ else token.text.lower()
+                    if candidate and candidate not in STOP_WORDS:
+                        # Check if this + next token form a compound
+                        if token.i + 1 < len(doc):
+                            next_tok = doc[token.i + 1]
+                            pair = f"{candidate} {next_tok.text.lower()}"
+                            if pair in COMPOUND_NOUNS:
+                                object_noun = COMPOUND_NOUNS[pair]
+                                break
+                        object_noun = candidate
+                        break
+
+        if object_noun is None:
+            fallback_tokens = tokens[1:] if tokens else []
+            remaining = _resolve_object_noun(fallback_tokens, raw_query)
+            object_noun = remaining
+
+    object_noun = _canonicalize_object_noun(object_noun)
 
     tool_noun = CATEGORY_TOOL_MAP.get(action_category)
     for token in tokens:
@@ -310,37 +478,6 @@ def _parse_with_spacy(raw_query: str, tokens: list[str]) -> Optional[QueryResult
         object_noun=object_noun,
         tool_noun=tool_noun,
     )
-
-
-# Compound noun map — maps multi-word objects to single tokens for YOLO grounding
-COMPOUND_NOUNS = {
-    "tea bag": "cup",
-    "teabag": "cup",
-    "tea cup": "cup",
-    "water bottle": "bottle",
-    "wine glass": "cup",
-    "coffee cup": "cup",
-    "frying pan": "pan",
-    "cutting board": "knife",
-    "paper towel": "towel",
-}
-
-
-def _resolve_object_noun(remaining_tokens: list[str], raw_query: str) -> str:
-    """Resolve object noun, handling compound nouns and YOLO-friendly mapping."""
-    # First check for compound nouns in the raw query
-    raw_lower = raw_query.lower()
-    for compound, coco_label in COMPOUND_NOUNS.items():
-        if compound in raw_lower:
-            return coco_label
-
-    # Join remaining to check for two-word compounds
-    if len(remaining_tokens) >= 2:
-        pair = f"{remaining_tokens[0]} {remaining_tokens[1]}"
-        if pair in COMPOUND_NOUNS:
-            return COMPOUND_NOUNS[pair]
-
-    return remaining_tokens[0] if remaining_tokens else "object"
 
 
 def _parse_with_regex(raw_query: str, tokens: list[str]) -> QueryResult:
@@ -361,7 +498,7 @@ def _parse_with_regex(raw_query: str, tokens: list[str]) -> QueryResult:
         verb_idx = 0
 
     remaining = tokens[verb_idx + 1 :] if verb_idx >= 0 else tokens
-    object_noun = _resolve_object_noun(remaining, raw_query)
+    object_noun = _canonicalize_object_noun(_resolve_object_noun(remaining, raw_query))
 
     tool_noun = CATEGORY_TOOL_MAP.get(action_category)
     for token in remaining[1:]:
@@ -407,6 +544,11 @@ if __name__ == "__main__":
         "pouring water into cup",
         "picking up the bottle",
         "mixing ingredients with spoon",
+        "picking hotdog",
+        "pouring ketchup",
+        "dipping teabag",
+        "grabbing the hot dog",
+        "adding tomato ketchup",
     ]
 
     for query in sample_queries:

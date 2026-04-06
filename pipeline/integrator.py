@@ -2,18 +2,15 @@
 Integrator — Yash
 ==================
 Orchestrates the full FIBA AI pipeline end-to-end.
-Connects Atul's detectors, Tanishk's motion/tracking engine,
-and assembles the final result for the Flask API.
 
-Pipeline stages:
-  1. Parse query  (Atul: query_parser)
-  2. Init detectors  (Atul: hand_detector, object_detector)
-  3. Open video + frame loop
-  4. Per-frame: hand detect → object detect → track → motion features
-  5. Action inference  (Tanishk: action_inferencer)
-  6. Key frame selection + segmentation  (Tanishk: segmentor)
-  7. Trajectory visualisation  (Tanishk: segmentor.draw_trajectory)
-  8. Assemble PipelineResult
+Major improvements for accuracy:
+  - REMOVED aggressive grounding rejection for PICK actions
+  - Added grasp_history tracking for motion engine
+  - Uses fingertip_center for better hand-object contact
+  - Samples motion features every 3 frames (was 5)
+  - Dynamic frame_window based on video length
+  - Better key frame selection with more samples
+  - Computes aggregate features across full video
 """
 
 import cv2
@@ -73,15 +70,20 @@ class FIBAPipeline:
     """
     Full FIBA AI pipeline runner.
 
-    Usage:
-        pipeline = FIBAPipeline()
-        result = pipeline.run("video.mp4", "cutting onion", progress_cb)
+    Improvements:
+      - Removed aggressive grounding guard that was killing valid detections
+      - Added grasp_history for hand state tracking
+      - Uses fingertip_center for better contact point estimation
+      - Finer motion sampling (every 3 frames instead of 5)
+      - Dynamic motion window based on actual video length
+      - Robust multi-frame aggregation for action inference
     """
 
     def __init__(self):
-        self.hand_detector = HandDetector(min_detection_confidence=0.6)
+        self.hand_detector = HandDetector(min_detection_confidence=0.5)
         self.segmentor = MobileSAMSegmentor()
-        self.motion_engine = MotionEngine(frame_window=30)
+        # Motion engine with larger window — will be adjusted per video
+        self.motion_engine = MotionEngine(frame_window=120, contact_threshold=150)
         self.action_inferencer = ActionInferencer()
 
     def run(
@@ -90,17 +92,7 @@ class FIBAPipeline:
         query_text: str,
         progress_cb: Optional[Callable] = None,
     ) -> PipelineResult:
-        """
-        Run the full pipeline on a video file.
-
-        Args:
-            video_path:   path to input video
-            query_text:   natural language query e.g. "cutting onion"
-            progress_cb:  optional callback(pct: int, msg: str)
-
-        Returns:
-            PipelineResult with all outputs
-        """
+        """Run the full pipeline on a video file."""
         t0 = time.time()
 
         def progress(pct: int, msg: str):
@@ -128,6 +120,9 @@ class FIBAPipeline:
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
+            # Dynamically adjust motion window to cover full video
+            self.motion_engine.frame_window = max(120, total_frames)
+
             progress(15, f"Processing {total_frames} frames at {fps:.1f} FPS...")
 
             # ==================== STAGE 4: Frame-by-frame =================
@@ -135,7 +130,8 @@ class FIBAPipeline:
             all_hand_results = []
             all_obj_results = []
             all_track_results = []
-            hand_wrist_history: List[Optional[np.ndarray]] = []
+            hand_contact_history: List[Optional[np.ndarray]] = []  # fingertip or wrist
+            grasp_history: List[Optional[float]] = []  # grasp openness per frame
             motion_features_per_sample: List[MotionFeatures] = []
 
             frame_id = 0
@@ -150,11 +146,18 @@ class FIBAPipeline:
                     scale = 640 / w
                     frame = cv2.resize(frame, (640, int(h * scale)))
 
-                # --- Atul's modules ---
+                # --- Hand detection ---
                 hand_result = self.hand_detector.detect(frame)
-                obj_result = obj_detector.detect(frame, hand_result)
 
-                # --- Tanishk's tracker ---
+                # --- Object detection ---
+                obj_result = obj_detector.detect(frame, hand_result, query.action_category)
+
+                # NOTE: Removed the aggressive grounding rejection for PICK actions
+                # that was at lines 158-169 in the old code. This was the main source
+                # of detection failures. The object detector now handles grounding
+                # internally with better multi-pass logic.
+
+                # --- Tracker ---
                 track_result = tracker.update(obj_result, frame_id)
 
                 # Store everything
@@ -163,25 +166,35 @@ class FIBAPipeline:
                 all_obj_results.append(obj_result)
                 all_track_results.append(track_result)
 
-                # Hand wrist for motion engine
-                wrist = hand_result.wrist_pos if hand_result.detected else None
-                hand_wrist_history.append(
-                    np.array(wrist, dtype=float) if wrist else None
-                )
+                # Hand contact point: prefer fingertip_center, fallback to wrist
+                if hand_result.detected:
+                    ftip = getattr(hand_result, "fingertip_center", None)
+                    wrist = hand_result.wrist_pos
+                    contact_pt = ftip if ftip else wrist
+                    hand_contact_history.append(
+                        np.array(contact_pt, dtype=float) if contact_pt else None
+                    )
+                    # Record grasp openness
+                    grasp_val = getattr(hand_result, "grasp_openness", None)
+                    grasp_history.append(grasp_val)
+                else:
+                    hand_contact_history.append(None)
+                    grasp_history.append(None)
 
-                # Sample motion features every 5 frames for efficiency
-                if frame_id % 5 == 0 and len(tracker.center_history) >= 3:
+                # Sample motion features every 3 frames for finer granularity (was 5)
+                if frame_id % 3 == 0 and len(tracker.center_history) >= 3:
                     mf = self.motion_engine.compute(
                         tracker.get_history(),
-                        hand_wrist_history,
+                        hand_contact_history,
                         frame_height=frame.shape[0],
+                        grasp_history=grasp_history,
                     )
                     motion_features_per_sample.append(mf)
 
                 frame_id += 1
 
-                # Progress update every 30 frames
-                if frame_id % 30 == 0:
+                # Progress update every 20 frames
+                if frame_id % 20 == 0:
                     pct = 15 + int((frame_id / max(total_frames, 1)) * 55)
                     progress(min(pct, 70), f"Processed {frame_id}/{total_frames} frames...")
 
@@ -196,18 +209,34 @@ class FIBAPipeline:
             # Compute final aggregate features over full track history
             final_features = self.motion_engine.compute(
                 tracker.get_history(),
-                hand_wrist_history,
+                hand_contact_history,
                 frame_height=all_frames[0].shape[0],
+                grasp_history=grasp_history,
             )
 
             video_duration_ms = (len(all_frames) / fps) * 1000.0
 
+            # Primary inference on full-video aggregated features
             action_result = self.action_inferencer.infer(
                 features=final_features,
                 action_category=query.action_category,
                 action_verb=query.action_verb,
                 timestamps=(0.0, video_duration_ms),
             )
+
+            # Also try multi-frame aggregation and take the better score
+            if motion_features_per_sample:
+                agg_result = self.action_inferencer.infer_from_history(
+                    all_features=motion_features_per_sample,
+                    action_category=query.action_category,
+                    action_verb=query.action_verb,
+                    fps=fps,
+                )
+                # Take the result with higher confidence
+                if agg_result.confidence > action_result.confidence:
+                    action_result = agg_result
+                    action_result.timestamp_range = (0.0, video_duration_ms)
+
             # Attach trajectory for rendering
             action_result.trajectory = list(tracker.center_history)
 
@@ -218,9 +247,9 @@ class FIBAPipeline:
                 motion_features_per_sample, n=3
             )
 
-            # Map from motion-sample indices to actual frame indices
+            # Map from motion-sample indices to actual frame indices (every 3 frames)
             actual_key_indices = [
-                min(i * 5, len(all_frames) - 1) for i in key_indices
+                min(i * 3, len(all_frames) - 1) for i in key_indices
             ]
             # Fallback: evenly spaced if nothing selected
             if not actual_key_indices:
@@ -232,7 +261,6 @@ class FIBAPipeline:
             # Ensure exactly 3, deduplicate
             actual_key_indices = sorted(set(actual_key_indices))[:3]
             while len(actual_key_indices) < 3 and len(all_frames) > 0:
-                # Pad with last frame
                 actual_key_indices.append(len(all_frames) - 1)
 
             progress(82, "Segmenting key frames...")

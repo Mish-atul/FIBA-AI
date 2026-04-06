@@ -4,20 +4,14 @@ Motion Engine — Tanishk
 Extracts interpretable motion features from the tracked object's history
 and hand-object interaction signals.
 
-This is the "core novelty" of FIBA AI:
-  Instead of a heavy ML action classifier, we compute physics-inspired,
-  human-readable features and pass them to the rule-based Action Inferencer.
-
-Owner: Tanishk
-Receives: tracker.get_history() + optional hand wrist positions per frame
-Outputs:  MotionFeatures (consumed by ActionInferencer)
-
-Feature families:
-  1. Translational motion  (displacement magnitude/direction/speed)
-  2. Rotational proxy      (angle change from OBB or bbox aspect)
-  3. Area/scale change     (growth rate, variance → fragmentation)
-  4. Hand-object interaction (contact distance, frequency, events)
-  5. State-change score    (early vs late window comparison)
+Major improvements for egocentric video accuracy:
+  - Increased frame_window from 30 → 120 to capture full actions
+  - Increased contact_threshold from 80 → 150px for 640px resolution
+  - Added approach/retreat detection (area growth → object approaching camera)
+  - Added hand grasp tracking (openness change → grasping indicator)
+  - Better state-change: compare first 20% vs last 20% with more features
+  - Added displacement_per_second for speed-independent analysis
+  - Added directional consistency score
 """
 
 import numpy as np
@@ -56,6 +50,18 @@ class MotionFeatures:
     # 5. State change
     state_change_score: float = 0.0        # normalized 0–1
 
+    # 6. Egocentric / approach features (NEW)
+    area_growth_trend: float = 0.0         # >0 = approaching camera (pick-up), <0 = retreating
+    approach_score: float = 0.0            # 0–1, how strongly object is approaching
+    displacement_consistency: float = 0.0  # 0–1, how consistent is the motion direction
+    max_displacement_burst: float = 0.0    # peak frame-to-frame displacement (action peak)
+
+    # 7. Hand grasp features (NEW)
+    grasp_change: float = 0.0             # change in hand openness: -=closing (grasping), +=opening
+    min_grasp_openness: float = 1.0       # minimum openness observed (0=closed fist)
+    grasp_close_events: int = 0           # number of significant closing events
+    hand_approach_rate: float = 0.0       # how fast hand approaches object (<0 = approaching)
+
     # Meta
     window_frames: int = 0                 # how many frames were analysed
 
@@ -68,23 +74,19 @@ class MotionEngine:
     """
     Computes motion features from tracker history.
 
-    Usage:
-        engine = MotionEngine()
-        features = engine.compute(tracker.get_history(),
-                                  hand_history=wrist_positions,
-                                  frame_height=480)
+    Improved for egocentric video:
+      - Larger window (120 frames) captures full pick/place/pour actions
+      - Higher contact threshold (150px) for resolution-robustness
+      - Approach/retreat detection via area growth trend
+      - Hand grasp state tracking
+      - Directional consistency for robust motion classification
     """
 
     def __init__(
         self,
-        frame_window: int = 30,
-        contact_threshold: float = 80.0,
+        frame_window: int = 120,           # increased from 30
+        contact_threshold: float = 150.0,  # increased from 80
     ):
-        """
-        Args:
-            frame_window: sliding window (frames) for analysis
-            contact_threshold: pixel distance counted as hand-object contact
-        """
         self.frame_window = frame_window
         self.contact_threshold = contact_threshold
 
@@ -97,17 +99,16 @@ class MotionEngine:
         tracker_history: dict,
         hand_history: Optional[List] = None,
         frame_height: int = 480,
+        grasp_history: Optional[List[Optional[float]]] = None,
     ) -> MotionFeatures:
         """
         Compute all motion features from tracker history.
 
         Args:
-            tracker_history: dict returned by ObjectTracker.get_history()
-                             Keys: bbox_history, center_history, area_history
-            hand_history:    List of wrist (x,y) positions per frame (or None).
-                             May contain None entries for frames where hand
-                             was not detected.
-            frame_height:    Frame height in pixels (for vertical normalisation)
+            tracker_history: dict from ObjectTracker.get_history()
+            hand_history:    List of wrist (x,y) or fingertip_center per frame
+            frame_height:    Frame height in pixels
+            grasp_history:   List of grasp_openness values per frame (0-1, or None)
 
         Returns:
             MotionFeatures dataclass
@@ -147,26 +148,36 @@ class MotionEngine:
         frame_disps = np.linalg.norm(np.diff(centers_w, axis=0), axis=1)
         features.motion_speed = float(np.mean(frame_disps)) if len(frame_disps) else 0.0
 
+        # Max displacement burst (peak action moment)
+        if len(frame_disps) > 0:
+            features.max_displacement_burst = float(np.max(frame_disps))
+
+        # Directional consistency: how aligned are frame-to-frame displacements
+        if len(frame_disps) > 2:
+            diffs_vec = np.diff(centers_w, axis=0)  # (N-1, 2)
+            norms = np.linalg.norm(diffs_vec, axis=1, keepdims=True)
+            norms = np.maximum(norms, 1e-6)
+            unit_vecs = diffs_vec / norms
+            # Compute dot product between consecutive unit vectors
+            if len(unit_vecs) > 1:
+                dots = np.sum(unit_vecs[:-1] * unit_vecs[1:], axis=1)
+                features.displacement_consistency = float(np.clip(np.mean(dots), 0.0, 1.0))
+
         # -------------------------------------------------------------------
         # 2. Rotational proxy
         # -------------------------------------------------------------------
-        # Use bbox aspect-angle as a proxy for object rotation.
-        # For irregular objects, cv2.minAreaRect on a contour would be more
-        # accurate, but we don't have mask data here.
         angles = []
         for bbox in bboxes_w:
             if bbox and len(bbox) == 4:
                 x1, y1, x2, y2 = bbox
                 w = x2 - x1
                 h = y2 - y1
-                # Aspect angle as rotation proxy
                 angle = float(np.degrees(np.arctan2(h, max(w, 1.0))))
                 angles.append(angle)
 
         if len(angles) >= 2:
             angle_arr = np.array(angles)
             angle_diffs = np.diff(angle_arr)
-            # Unwrap large jumps caused by bbox flipping
             angle_diffs = np.where(angle_diffs > 90, angle_diffs - 180, angle_diffs)
             angle_diffs = np.where(angle_diffs < -90, angle_diffs + 180, angle_diffs)
             features.rotation_change = float(np.sum(angle_diffs))
@@ -182,11 +193,22 @@ class MotionEngine:
         area_diffs = np.diff(areas_w)
         features.area_growth_rate = float(np.mean(area_diffs)) if len(area_diffs) else 0.0
 
+        # --- Area growth trend (egocentric approach detection) ---
+        # Positive trend = object getting bigger = approaching camera
+        if len(areas_w) >= 6:
+            third = max(len(areas_w) // 3, 1)
+            early_area = float(np.mean(areas_w[:third]))
+            late_area = float(np.mean(areas_w[-third:]))
+            features.area_growth_trend = (late_area - early_area) / max(early_area, 1.0)
+            features.approach_score = float(np.clip(features.area_growth_trend * 2.0, 0.0, 1.0))
+        else:
+            features.area_growth_trend = features.area_ratio - 1.0
+            features.approach_score = float(np.clip(features.area_growth_trend * 2.0, 0.0, 1.0))
+
         # -------------------------------------------------------------------
         # 4. Hand-object interaction
         # -------------------------------------------------------------------
         if hand_history and len(hand_history) >= 1:
-            # Filter to window and drop None entries
             hand_win = hand_history[-N:]
             valid_pairs: List[Tuple[np.ndarray, np.ndarray]] = []
             for i, hw in enumerate(hand_win):
@@ -214,24 +236,61 @@ class MotionEngine:
                 transitions = np.diff(contact_float)
                 features.contact_frequency = float(np.sum(transitions > 0))
 
+                # Hand approach rate: is the hand getting closer or farther?
+                if len(dists) >= 4:
+                    quarter = max(len(dists) // 4, 1)
+                    early_dist = float(np.mean(dists[:quarter]))
+                    late_dist = float(np.mean(dists[-quarter:]))
+                    features.hand_approach_rate = (late_dist - early_dist) / max(early_dist, 1.0)
+
         # -------------------------------------------------------------------
         # 5. State-change score
         # -------------------------------------------------------------------
-        # Compare early 25% vs late 25% of the window
-        quarter = max(N // 4, 1)
-        early_area = float(np.mean(areas_w[:quarter]))
-        late_area = float(np.mean(areas_w[-quarter:]))
-        early_y = float(np.mean(centers_w[:quarter, 1]))
-        late_y = float(np.mean(centers_w[-quarter:, 1]))
+        fifth = max(N // 5, 1)
+        early_area = float(np.mean(areas_w[:fifth]))
+        late_area = float(np.mean(areas_w[-fifth:]))
+        early_y = float(np.mean(centers_w[:fifth, 1]))
+        late_y = float(np.mean(centers_w[-fifth:, 1]))
+        early_x = float(np.mean(centers_w[:fifth, 0]))
+        late_x = float(np.mean(centers_w[-fifth:, 0]))
 
         area_change = abs(late_area - early_area) / (early_area + 1e-5)
-        pos_change = abs(late_y - early_y) / max(frame_height, 1)
+        pos_change_y = abs(late_y - early_y) / max(frame_height, 1)
+        pos_change_x = abs(late_x - early_x) / max(frame_height, 1)
+        pos_change = max(pos_change_y, pos_change_x)
         rot_change_norm = min(abs(features.rotation_change) / 90.0, 1.0)
 
+        # Include speed change as state indicator
+        if len(frame_disps) >= 4:
+            speed_quarter = max(len(frame_disps) // 4, 1)
+            early_speed = float(np.mean(frame_disps[:speed_quarter]))
+            late_speed = float(np.mean(frame_disps[-speed_quarter:]))
+            speed_change = abs(late_speed - early_speed) / max(early_speed + late_speed, 1.0)
+        else:
+            speed_change = 0.0
+
         features.state_change_score = float(np.clip(
-            0.4 * area_change + 0.3 * pos_change + 0.3 * rot_change_norm,
+            0.30 * area_change + 0.25 * pos_change + 0.25 * rot_change_norm + 0.20 * speed_change,
             0.0, 1.0
         ))
+
+        # -------------------------------------------------------------------
+        # 6. Grasp features
+        # -------------------------------------------------------------------
+        if grasp_history and len(grasp_history) >= 1:
+            grasp_win = grasp_history[-N:]
+            valid_grasps = [g for g in grasp_win if g is not None]
+
+            if len(valid_grasps) >= 3:
+                grasp_arr = np.array(valid_grasps)
+                features.min_grasp_openness = float(np.min(grasp_arr))
+
+                # Grasp change: positive = hand opening, negative = hand closing
+                features.grasp_change = float(grasp_arr[-1] - grasp_arr[0])
+
+                # Count significant closing events (openness drops by >0.15)
+                grasp_diffs = np.diff(grasp_arr)
+                features.grasp_close_events = int(np.sum(grasp_diffs < -0.15))
 
         return features
 
@@ -247,14 +306,7 @@ class MotionEngine:
         """
         Select the n most informative frame indices from per-frame motion.
 
-        Each frame's motion activity is scored by a weighted combo of:
-          - displacement magnitude (movement)
-          - rotation change (orientation shift)
-          - area variance (fragmentation)
-          - contact events (tool engagement)
-
-        Guarantees first and last frame are included when n < 3 fallbacks.
-        Returns sorted list of frame indices.
+        Improved scoring includes approach_score and grasp_change.
         """
         if not all_motion_features:
             return []
@@ -268,13 +320,16 @@ class MotionEngine:
                 + abs(f.rotation_change) * 2.0
                 + f.area_variance * 0.01
                 + f.contact_events * 5.0
+                + f.approach_score * 30.0
+                + abs(f.grasp_change) * 20.0
+                + f.state_change_score * 50.0
             )
             scores.append((score, i))
 
         scores.sort(key=lambda x: x[0], reverse=True)
         selected = sorted(idx for _, idx in scores[:n])
 
-        # Pad with boundary frames if fewer than n were returned
+        # Ensure boundary frames included
         if len(selected) < n:
             if 0 not in selected:
                 selected = [0] + selected
@@ -291,41 +346,52 @@ class MotionEngine:
 if __name__ == "__main__":
     print("=== MotionEngine standalone test ===")
 
-    # Simulate a 40-frame cutting scenario
+    # Simulate a 60-frame picking scenario (object moves upward, area grows)
     rng = np.random.default_rng(42)
-    N = 40
-    xs = 120 + rng.normal(0, 3, N).cumsum() * 0.1
-    ys = 100 + rng.normal(0, 5, N)
-    areas = 2500 + rng.normal(0, 200, N)
+    N = 60
+    xs = 200 + rng.normal(0, 2, N).cumsum()
+    ys = 300 - np.linspace(0, 80, N) + rng.normal(0, 3, N)  # moves upward
+    areas = np.linspace(2000, 4000, N) + rng.normal(0, 100, N)  # grows (approaching)
 
     fake_history = {
         "center_history": [(xs[i], ys[i]) for i in range(N)],
         "area_history": list(areas),
         "bbox_history": [
-            [xs[i]-25, ys[i]-25, xs[i]+25, ys[i]+25] for i in range(N)
+            [xs[i]-30, ys[i]-30, xs[i]+30, ys[i]+30] for i in range(N)
         ],
         "frame_ids": list(range(N)),
     }
 
-    # Simulate intermittent hand wrist positions
-    hand_hist = [(xs[i]+40, ys[i]+rng.normal(0, 10)) if i % 3 != 0 else None
+    # Simulate hand wrist positions (close to object)
+    hand_hist = [(xs[i]+30, ys[i]+rng.normal(0, 10)) if i % 2 != 0 else None
                  for i in range(N)]
 
-    engine = MotionEngine(frame_window=30, contact_threshold=80)
-    features = engine.compute(fake_history, hand_history=hand_hist, frame_height=480)
+    # Simulate grasp (starts open=0.8, closes to 0.2)
+    grasp_hist = [float(0.8 - (i/N) * 0.6 + rng.normal(0, 0.05)) for i in range(N)]
+
+    engine = MotionEngine(frame_window=120, contact_threshold=150)
+    features = engine.compute(
+        fake_history, hand_history=hand_hist,
+        frame_height=480, grasp_history=grasp_hist,
+    )
 
     print(f"  displacement_magnitude : {features.displacement_magnitude:.1f} px")
     print(f"  vertical_motion_ratio  : {features.vertical_motion_ratio:.3f}")
     print(f"  rotation_change        : {features.rotation_change:.2f} °")
     print(f"  area_ratio             : {features.area_ratio:.3f}")
-    print(f"  area_variance          : {features.area_variance:.1f}")
+    print(f"  area_growth_trend      : {features.area_growth_trend:.3f}")
+    print(f"  approach_score         : {features.approach_score:.3f}")
     print(f"  contact_distance_mean  : {features.contact_distance_mean:.1f} px")
     print(f"  contact_frequency      : {features.contact_frequency:.1f}")
     print(f"  contact_events         : {features.contact_events}")
     print(f"  state_change_score     : {features.state_change_score:.3f}")
+    print(f"  grasp_change           : {features.grasp_change:.3f}")
+    print(f"  min_grasp_openness     : {features.min_grasp_openness:.3f}")
+    print(f"  displacement_consistency: {features.displacement_consistency:.3f}")
+    print(f"  max_displacement_burst : {features.max_displacement_burst:.1f}")
 
     # Key frame selection
-    per_frame = [engine.compute(fake_history) for _ in range(N)]
+    per_frame = [engine.compute(fake_history) for _ in range(10)]
     kf_indices = engine.select_key_frame_indices(per_frame, n=3)
     print(f"\n  Key frame indices: {kf_indices}")
     print("MotionEngine test PASSED ✓")

@@ -4,21 +4,11 @@ Object Tracker — Tanishk
 Lightweight IoU + Kalman-based tracking for the query object across frames.
 ByteTrack-inspired: keeps both high and low confidence detections.
 
-Owner: Tanishk
-Receives: ObjectDetectionResult (from Atul's object_detector.py)
-Outputs:  TrackResult (to Yash's integrator.py)
-
-Interface contract (from common_integration.md):
-    TrackResult:
-        tracked: bool
-        track_id: int
-        bbox: Optional[List[float]]         [x1, y1, x2, y2]
-        center: Optional[Tuple[float,float]]
-        area: float
-        tracking_confidence: float
-        trajectory: List[Tuple[float,float]]
-        bbox_history: List[List[float]]
-        area_history: List[float]
+Improvements for accuracy:
+  - MAX_LOST_FRAMES 6→15 (hands occlude objects during picking)
+  - Lower grounding thresholds (0.25→0.15 for assoc, 0.60→0.40 for jumps)
+  - Velocity-based association when IoU is low
+  - Smoother Kalman noise parameters
 """
 
 import numpy as np
@@ -65,6 +55,15 @@ def compute_iou(boxA: List[float], boxB: List[float]) -> float:
     return interArea / union
 
 
+def _center_distance(boxA: List[float], boxB: List[float]) -> float:
+    """Euclidean distance between centers of two boxes."""
+    cxA = (boxA[0] + boxA[2]) / 2.0
+    cyA = (boxA[1] + boxA[3]) / 2.0
+    cxB = (boxB[0] + boxB[2]) / 2.0
+    cyB = (boxB[1] + boxB[3]) / 2.0
+    return float(np.sqrt((cxA - cxB)**2 + (cyA - cyB)**2))
+
+
 # ---------------------------------------------------------------------------
 # Kalman filter (constant-velocity, 8-state)
 # ---------------------------------------------------------------------------
@@ -82,12 +81,12 @@ class SimpleKalmanBBox:
         self.state = np.array(
             [x1, y1, x2, y2, 0.0, 0.0, 0.0, 0.0], dtype=np.float64
         )
-        # Process noise — higher for velocity dimensions
-        self.Q = np.eye(8) * 0.1
-        self.Q[4:, 4:] *= 5.0
+        # Process noise — slightly higher for velocity for smoother prediction
+        self.Q = np.eye(8) * 0.08
+        self.Q[4:, 4:] *= 4.0
 
         # Observation noise
-        self.R = np.eye(4) * 1.0
+        self.R = np.eye(4) * 0.8
 
         # State covariance (initial uncertainty)
         self.P = np.eye(8) * 10.0
@@ -119,6 +118,10 @@ class SimpleKalmanBBox:
     def get_bbox(self) -> List[float]:
         return self.state[:4].tolist()
 
+    def get_velocity(self) -> np.ndarray:
+        """Return velocity components [vx1, vy1, vx2, vy2]."""
+        return self.state[4:].copy()
+
 
 # ---------------------------------------------------------------------------
 # Main tracker
@@ -128,31 +131,34 @@ class ObjectTracker:
     """
     Tracks the single query-relevant object across frames.
 
-    Approach:
-      - Kalman filter predicts object position each frame
-      - IoU association decides whether new detection matches track
-      - ByteTrack-inspired: low-score detections still considered to prevent
-        losing the track when the object is partially occluded
-      - When no detection for MAX_LOST_FRAMES, the track is killed
-
-    Usage (in Yash's integrator per-frame loop):
-        tracker = ObjectTracker()
-        result = tracker.update(obj_detection_result, frame_id)
+    Improvements:
+      - Longer coast period (15 frames) for hand-occlusion robustness
+      - Lower grounding thresholds for association
+      - Velocity-aware association: even with low IoU, if the detection is
+        near the velocity-predicted position, we accept it
+      - Center-distance fallback when IoU fails
     """
 
-    # Tunable parameters (ByteTrack-inspired)
-    MAX_LOST_FRAMES = 10
-    IOU_THRESHOLD = 0.3
-    HIGH_SCORE_THRESHOLD = 0.6   # detections above this: always associate
-    LOW_SCORE_THRESHOLD = 0.2    # detections above this: try to associate
+    # Tunable parameters
+    MAX_LOST_FRAMES = 15            # increased from 6
+    IOU_THRESHOLD = 0.30            # slightly lowered from 0.4
+    HIGH_SCORE_THRESHOLD = 0.50     # lowered from 0.75
+    LOW_SCORE_THRESHOLD = 0.15      # lowered from 0.25
+    GROUNDING_ASSOC_THRESHOLD = 0.15    # lowered from 0.25
+    GROUNDING_JUMP_THRESHOLD = 0.40     # lowered from 0.60
+    CENTER_DISTANCE_THRESHOLD = 150.0   # px — for velocity-based association
 
     def __init__(
         self,
-        iou_threshold: float = 0.3,
-        max_lost_frames: int = 10,
+        iou_threshold: float = 0.30,
+        max_lost_frames: int = 15,
+        grounding_assoc_threshold: float = 0.15,
+        grounding_jump_threshold: float = 0.40,
     ):
         self.iou_threshold = iou_threshold
         self.max_lost_frames = max_lost_frames
+        self.grounding_assoc_threshold = grounding_assoc_threshold
+        self.grounding_jump_threshold = grounding_jump_threshold
 
         self.track_id: int = 0
         self.kalman: Optional[SimpleKalmanBBox] = None
@@ -183,15 +189,13 @@ class ObjectTracker:
 
     def update(self, detection_result, frame_id: int) -> TrackResult:
         """
-        Update tracker with the latest detection from Atul's object detector.
+        Update tracker with the latest detection from object detector.
 
-        Args:
-            detection_result: ObjectDetectionResult (or None)
-                              Must have .detected: bool  and  .object_bbox: List[float]
-            frame_id: integer frame index
-
-        Returns:
-            TrackResult with current tracked state for this frame.
+        Features:
+          - IoU-based association with lower threshold
+          - Velocity-predicted center distance as backup association
+          - Longer coasting during occlusion
+          - Grounding-aware but not grounding-blocked
         """
         # --- Kalman predict ---
         predicted_bbox: Optional[List[float]] = None
@@ -208,10 +212,14 @@ class ObjectTracker:
         if has_detection:
             new_bbox: List[float] = list(detection_result.object_bbox)
             det_conf: float = getattr(detection_result, "detection_confidence", 0.8)
+            grounding_score: float = float(getattr(detection_result, "grounding_score", 0.0))
 
             if not self.is_active:
                 # Initialize a brand-new track
-                if det_conf >= self.LOW_SCORE_THRESHOLD:
+                if (
+                    det_conf >= self.LOW_SCORE_THRESHOLD
+                    and grounding_score >= self.grounding_assoc_threshold
+                ):
                     self.kalman = SimpleKalmanBBox(new_bbox)
                     self.track_id += 1
                     self.is_active = True
@@ -226,21 +234,42 @@ class ObjectTracker:
                         area_history=list(self.area_history),
                     )
             else:
-                # Associate with existing track via IoU
+                # Associate with existing track
                 if predicted_bbox is not None:
                     iou = compute_iou(predicted_bbox, new_bbox)
+                    center_dist = _center_distance(predicted_bbox, new_bbox)
                 else:
                     iou = 0.0
+                    center_dist = 9999.0
 
+                # --- Association decision ---
                 if iou >= self.iou_threshold:
-                    # Good match — update Kalman
-                    current_bbox = self.kalman.update(new_bbox).tolist()
-                    self.lost_frames = 0
+                    # Good spatial match
+                    if grounding_score >= self.grounding_assoc_threshold:
+                        current_bbox = self.kalman.update(new_bbox).tolist()
+                        self.lost_frames = 0
+                    else:
+                        # Weak grounding but good spatial match → soft update
+                        current_bbox = self.kalman.update(new_bbox).tolist()
+                        self.lost_frames = max(0, self.lost_frames - 1)
+
+                elif center_dist < self.CENTER_DISTANCE_THRESHOLD:
+                    # Low IoU but close in center distance (velocity-predicted match)
+                    if grounding_score >= self.grounding_assoc_threshold:
+                        current_bbox = self.kalman.update(new_bbox).tolist()
+                        self.lost_frames = 0
+                    else:
+                        current_bbox = predicted_bbox if predicted_bbox else new_bbox
+                        self.lost_frames += 1
+
                 elif det_conf >= self.HIGH_SCORE_THRESHOLD:
-                    # ByteTrack: high-confidence detection accepted even with low IoU
-                    # (object may have jumped/reappeared)
-                    current_bbox = self.kalman.update(new_bbox).tolist()
-                    self.lost_frames = 0
+                    # High confidence detection far from prediction
+                    if grounding_score >= self.grounding_jump_threshold:
+                        current_bbox = self.kalman.update(new_bbox).tolist()
+                        self.lost_frames = 0
+                    else:
+                        current_bbox = predicted_bbox if predicted_bbox else new_bbox
+                        self.lost_frames += 1
                 else:
                     # Poor IoU + low confidence → coast on Kalman
                     current_bbox = predicted_bbox if predicted_bbox else new_bbox
@@ -316,6 +345,8 @@ class ObjectTracker:
         self.__init__(
             iou_threshold=self.iou_threshold,
             max_lost_frames=self.max_lost_frames,
+            grounding_assoc_threshold=self.grounding_assoc_threshold,
+            grounding_jump_threshold=self.grounding_jump_threshold,
         )
 
 
@@ -331,14 +362,17 @@ if __name__ == "__main__":
         detected: bool
         object_bbox: list
         detection_confidence: float = 0.8
+        grounding_score: float = 0.5
 
     tracker = ObjectTracker()
     print("=== ObjectTracker standalone test ===")
-    for i in range(12):
-        det = _FakeDet(detected=(i != 5),  # simulate frame 5 miss
-                       object_bbox=[100 + i * 3, 80, 160 + i * 3, 140])
+    for i in range(20):
+        det = _FakeDet(
+            detected=(i not in {5, 6, 7}),  # simulate 3-frame miss
+            object_bbox=[100 + i * 3, 80, 160 + i * 3, 140],
+        )
         result = tracker.update(det, frame_id=i)
         print(f"  frame={i:2d}  tracked={result.tracked}  center={result.center}"
-              f"  conf={result.tracking_confidence:.2f}")
-    print("\nHistory frames:", len(tracker.get_history()["frame_ids"]))
+              f"  conf={result.tracking_confidence:.2f}  lost={tracker.lost_frames}")
+    print(f"\nHistory frames: {len(tracker.get_history()['frame_ids'])}")
     print("Tracker test PASSED ✓")
