@@ -32,6 +32,12 @@ from pipeline.segmentor import (
     encode_frame_b64,
     annotate_key_frames,
 )
+from pipeline.hand_skeleton import (
+    draw_hand_skeleton,
+    draw_finger_trajectories,
+    encode_frame_b64 as sk_encode,
+)
+from pipeline.sop_validator import SOPValidator, DEFAULT_SOP
 
 
 @dataclass
@@ -52,6 +58,9 @@ class PipelineResult:
     processing_time_s: float = 0.0
     error: str = ""
     action_description: str = ""
+    # Hand skeleton key frames
+    skeleton_frames_b64: list = field(default_factory=list)
+    finger_trajectory_b64: str = ""
     # Edge deployment stats
     edge_stats: dict = field(default_factory=dict)
 
@@ -106,6 +115,7 @@ class FIBAPipeline:
         self.segmentor = MobileSAMSegmentor()
         self.motion_engine = MotionEngine(frame_window=120, contact_threshold=150)
         self.action_inferencer = ActionInferencer()
+        self.sop_validator = SOPValidator(DEFAULT_SOP)
 
     def run(
         self, video_path: str, query_text: str,
@@ -300,7 +310,29 @@ class FIBAPipeline:
                 trajectory=list(tracker.center_history), quality=85,
             )
 
-            progress(88, "Building trajectory...")
+            progress(85, "Drawing hand skeletons...")
+
+            # Hand skeleton overlays on key frames
+            skeleton_frames_b64 = []
+            for ki in actual_key_indices:
+                hand_r = all_hand_results[ki]
+                kf = all_frames[ki].copy()
+                if hand_r.detected and hand_r.landmarks:
+                    kf = draw_hand_skeleton(kf, hand_r.landmarks)
+                skeleton_frames_b64.append(encode_frame_b64(kf))
+
+            # Finger trajectory image
+            landmark_history = [
+                hr.landmarks if hr.detected and hr.landmarks else None
+                for hr in all_hand_results
+            ]
+            finger_traj_canvas = draw_finger_trajectories(
+                frame_shape=all_frames[0].shape,
+                landmark_history=landmark_history,
+            )
+            finger_traj_b64 = encode_frame_b64(finger_traj_canvas)
+
+            progress(90, "Building trajectory...")
 
             traj_canvas = draw_trajectory(
                 frame_shape=all_frames[0].shape,
@@ -356,8 +388,18 @@ class FIBAPipeline:
                 fps=fps,
                 processing_time_s=round(elapsed, 2),
                 action_description=description,
+                skeleton_frames_b64=skeleton_frames_b64,
+                finger_trajectory_b64=finger_traj_b64,
                 edge_stats=edge_stats,
             )
 
         except Exception as e:
             return PipelineResult(success=False, error=f"{e}\n{traceback.format_exc()}")
+
+    def run_sop_reference(self, video_path, progress_cb=None):
+        """Learn SOP reference from a known-correct video."""
+        return self.sop_validator.learn_reference(video_path, progress_cb)
+
+    def run_sop_validate(self, video_path, progress_cb=None):
+        """Validate a test video against the learned SOP reference."""
+        return self.sop_validator.validate(video_path, progress_cb)

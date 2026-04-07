@@ -1,42 +1,47 @@
-# Python artifacts
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.so
 *.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Virtual environments
 .venv/
 venv/
-env/
 
-# IDE/editor
+# Model weights (large binaries)
+*.pt
+*.onnx
+*.tflite
+*.pth
+
+# Training data (too large for git)
+web_app/archive/
+web_app/dataset_sop_cls/
+web_app/runs/
+web_app/uploads/
+
+# Node
+node_modules/
+.expo/
+dist/
+static-build/
+
+# IDE
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Runtime files
-uploads/
-outputs/
-logs/
-*.log
+# Android build artifacts
+android_apk/app/build/
+android_apk/.gradle/
+android_apk/build/
+android_apk/local.properties
+*.apk
+*.aab
+*.ipa
 
-# Model weights and large binaries
-weights/
-*.pt
-*.onnx
-*.engine
-*.tflite
+# Temp files
+large_files.txt
 
-# Generated analysis artifacts
-_brief_pages/
-*_extracted*.txt
+# Replit
+.replit-artifact/

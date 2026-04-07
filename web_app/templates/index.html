@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FIBA AI — Find-it-by-Action</title>
-  <meta name="description" content="Zero-shot edge-friendly action retrieval from egocentric video." />
+  <title>FIBA AI — Find-it-by-Action · SOP Compliance</title>
+  <meta name="description" content="Zero-shot edge-friendly action retrieval and SOP compliance validation from egocentric video." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
@@ -23,7 +23,7 @@
     </div>
     <div class="nav-badge">
       <span class="badge-dot"></span>
-      Edge · Zero-Shot · Explainable
+      Edge · Zero-Shot · SOP Compliance
     </div>
   </nav>
 
@@ -38,7 +38,31 @@
       </p>
     </header>
 
-    <!-- UPLOAD -->
+    <!-- MODE SELECTOR -->
+    <section class="mode-selector" id="mode-selector">
+      <div class="mode-tabs">
+        <button class="mode-tab active" id="mode-action-tab" data-mode="action">
+          <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+            <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
+            <path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Action Search
+        </button>
+        <button class="mode-tab" id="mode-sop-tab" data-mode="sop">
+          <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+            <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" stroke="currentColor" stroke-width="2"/>
+            <rect x="9" y="3" width="6" height="4" rx="1" stroke="currentColor" stroke-width="2"/>
+            <path d="M9 14l2 2 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          SOP Compliance
+        </button>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- ACTION SEARCH MODE                                  -->
+    <!-- ═══════════════════════════════════════════════════ -->
+
     <section class="upload-section" id="upload-section">
       <div class="upload-card">
         <div class="upload-zone" id="drop-zone">
@@ -94,7 +118,158 @@
       </div>
     </section>
 
-    <!-- PROGRESS -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- SOP COMPLIANCE MODE                                 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+
+    <section class="sop-section" id="sop-section" hidden>
+      <!-- SOP Definition Timeline -->
+      <div class="sop-definition-card">
+        <h3 class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+            <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" stroke="currentColor" stroke-width="2"/>
+            <rect x="9" y="3" width="6" height="4" rx="1" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          Standard Operating Procedure — Seat Assembly (7 Steps)
+        </h3>
+        <div class="sop-timeline" id="sop-timeline">
+          <div class="sop-step" data-step="1">
+            <div class="sop-step-num">1</div>
+            <div class="sop-step-info">
+              <div class="sop-step-title">Assembling the spring</div>
+              <div class="sop-step-desc">Pliers used to assemble spring</div>
+            </div>
+          </div>
+          <div class="sop-step" data-step="2">
+            <div class="sop-step-num">2</div>
+            <div class="sop-step-info">
+              <div class="sop-step-title">Placing white plastic part</div>
+              <div class="sop-step-desc">White part positioned on assembly</div>
+            </div>
+          </div>
+          <div class="sop-step" data-step="3">
+            <div class="sop-step-num">3</div>
+            <div class="sop-step-info">
+              <div class="sop-step-title">Screwing-1</div>
+              <div class="sop-step-desc">First screwing with electric screwdriver</div>
+            </div>
+          </div>
+          <div class="sop-step" data-step="4">
+            <div class="sop-step-num">4</div>
+            <div class="sop-step-info">
+              <div class="sop-step-title">Inflating the valve</div>
+              <div class="sop-step-desc">Valve inflation with inflating tool</div>
+            </div>
+          </div>
+          <div class="sop-step" data-step="5">
+            <div class="sop-step-num">5</div>
+            <div class="sop-step-info">
+              <div class="sop-step-title">Placing black plastic part</div>
+              <div class="sop-step-desc">Black part positioned on assembly</div>
+            </div>
+          </div>
+          <div class="sop-step" data-step="6">
+            <div class="sop-step-num">6</div>
+            <div class="sop-step-info">
+              <div class="sop-step-title">Screwing-2</div>
+              <div class="sop-step-desc">Second screwing round</div>
+            </div>
+          </div>
+          <div class="sop-step" data-step="7">
+            <div class="sop-step-num">7</div>
+            <div class="sop-step-info">
+              <div class="sop-step-title">Fixing the cable</div>
+              <div class="sop-step-desc">Cable/pipe package attached</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SOP Upload -->
+      <div class="sop-upload-card">
+        <div class="sop-upload-row">
+          <!-- Reference upload -->
+          <div class="sop-upload-col">
+            <h4 class="sop-upload-title">
+              <span class="sop-upload-badge ref">1</span>
+              Set Reference (correct order)
+            </h4>
+            <p class="sop-upload-desc">Upload a video of a correctly-performed cycle (e.g., cycle 0).</p>
+            <div class="sop-drop-zone" id="sop-ref-zone">
+              <input type="file" id="sop-ref-input" accept="video/*" hidden />
+              <div class="sop-drop-content" id="sop-ref-content">
+                <svg viewBox="0 0 40 40" fill="none" width="36" height="36">
+                  <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3"/>
+                  <path d="M20 12v16M12 20h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <span>Drop reference video</span>
+              </div>
+              <div class="sop-file-info" id="sop-ref-file" hidden>
+                <span id="sop-ref-name">cycle0.mp4</span>
+                <button class="file-clear" id="sop-ref-clear">&times;</button>
+              </div>
+            </div>
+            <button class="process-btn sop-btn" id="sop-ref-btn" disabled>
+              <span class="btn-text">Learn Reference</span>
+            </button>
+            <div class="sop-ref-status" id="sop-ref-status"></div>
+          </div>
+
+          <!-- Test upload -->
+          <div class="sop-upload-col">
+            <h4 class="sop-upload-title">
+              <span class="sop-upload-badge test">2</span>
+              Validate Test Video
+            </h4>
+            <p class="sop-upload-desc">Upload a cycle video to validate against the reference.</p>
+            <div class="sop-drop-zone" id="sop-test-zone">
+              <input type="file" id="sop-test-input" accept="video/*" hidden />
+              <div class="sop-drop-content" id="sop-test-content">
+                <svg viewBox="0 0 40 40" fill="none" width="36" height="36">
+                  <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3"/>
+                  <path d="M20 12v16M12 20h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <span>Drop test video</span>
+              </div>
+              <div class="sop-file-info" id="sop-test-file" hidden>
+                <span id="sop-test-name">cycle1.mp4</span>
+                <button class="file-clear" id="sop-test-clear">&times;</button>
+              </div>
+            </div>
+            <button class="process-btn sop-btn" id="sop-test-btn" disabled>
+              <span class="btn-text">Validate</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SOP Progress -->
+      <div class="sop-progress-card" id="sop-progress" hidden>
+        <div class="progress-header">
+          <div class="progress-spinner"></div>
+          <span class="progress-title" id="sop-progress-title">Processing...</span>
+        </div>
+        <div class="progress-bar-container">
+          <div class="progress-bar" id="sop-progress-bar" style="width: 0%"></div>
+        </div>
+        <div class="progress-info">
+          <span class="progress-pct" id="sop-progress-pct">0%</span>
+          <span class="progress-msg" id="sop-progress-msg">Starting...</span>
+        </div>
+      </div>
+
+      <!-- SOP Results -->
+      <div class="sop-results-card" id="sop-results" hidden>
+        <!-- Pass/Fail Banner -->
+        <div class="sop-verdict" id="sop-verdict"></div>
+        <!-- Step-by-step results -->
+        <div class="sop-step-results" id="sop-step-results"></div>
+        <!-- Summary -->
+        <div class="sop-summary" id="sop-summary"></div>
+      </div>
+    </section>
+
+    <!-- SHARED PROGRESS -->
     <section class="progress-section" id="progress-section" hidden>
       <div class="progress-card">
         <div class="progress-header">
@@ -174,7 +349,40 @@
         <div class="keyframes-grid" id="keyframes-grid"></div>
       </div>
 
-      <!-- Trajectory -->
+      <!-- Hand Skeleton Frames -->
+      <div class="result-card" id="skeleton-card">
+        <h3 class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+            <path d="M18 11V6a2 2 0 00-2-2 2 2 0 00-2 2M14 10V4a2 2 0 00-2-2 2 2 0 00-2 2v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M10 10.5V5a2 2 0 00-4 0v9a6 6 0 006 6h2a6 6 0 006-6v-4a2 2 0 00-4 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Hand Skeleton — 21-Joint Tracking (per-finger color coded)
+        </h3>
+        <div class="skeleton-legend">
+          <span class="legend-item" style="--lc: #3c3cff;">● Thumb</span>
+          <span class="legend-item" style="--lc: #3cff3c;">● Index</span>
+          <span class="legend-item" style="--lc: #ff783c;">● Middle</span>
+          <span class="legend-item" style="--lc: #00ffff;">● Ring</span>
+          <span class="legend-item" style="--lc: #ff3cff;">● Pinky</span>
+        </div>
+        <div class="keyframes-grid" id="skeleton-grid"></div>
+      </div>
+
+      <!-- Finger Trajectory -->
+      <div class="result-card" id="finger-traj-card">
+        <h3 class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+            <path d="M3 17l6-6 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M14 7h7v7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Finger Tip Trajectories
+        </h3>
+        <div class="trajectory-container">
+          <img id="finger-traj-img" src="" alt="Finger trajectories" class="trajectory-img" />
+        </div>
+      </div>
+
+      <!-- Object Trajectory -->
       <div class="result-card" id="trajectory-card">
         <h3 class="card-title">
           <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
@@ -251,7 +459,7 @@
 
   <footer class="footer">
     <p>FIBA AI &middot; MIT Bangalore Hitachi Hackathon &middot; Team: Atul · Tanishk · Yash</p>
-    <p class="footer-sub">Zero-shot · Edge-friendly · Explainable action retrieval</p>
+    <p class="footer-sub">Zero-shot · Edge-friendly · Explainable action retrieval · SOP Compliance</p>
   </footer>
 
   <div class="lightbox" id="lightbox" hidden>
